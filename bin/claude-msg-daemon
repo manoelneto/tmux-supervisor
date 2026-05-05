@@ -131,22 +131,55 @@ is_ready() {
 
 send_message() {
   local target="$1" text="$2"
-  local line_count
+  local first_line line_count
+  first_line="$(printf '%s' "$text" | head -n1)"
   line_count="$(printf '%s' "$text" | awk 'END{print NR}')"
-  # awk on a string without trailing newline reports 0; treat as 1.
   (( line_count == 0 )) && line_count=1
 
+  # 1. Type / paste the text into the input buffer (no Enter yet).
   if (( line_count >= PASTE_THRESHOLD )); then
-    # Bracketed paste so multiline lands as one [Pasted text] block, not
-    # multiple submits.
     tmux send-keys -t "$target" -l $'\e[200~'
     tmux send-keys -t "$target" -l -- "$text"
     tmux send-keys -t "$target" -l $'\e[201~'
   else
     tmux send-keys -t "$target" -l -- "$text"
   fi
-  sleep 0.4
+
+  # 2. Wait for the typed/pasted content to actually be visible in the input
+  # box BEFORE we press Enter. Guards against Enter landing into an empty or
+  # stale buffer when the pane is slow to render.
+  local i pane input_line confirmed=0
+  for i in $(seq 1 15); do
+    sleep 0.3
+    pane="$(capture "$target")"
+    input_line="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
+    # Multiline paste collapses to a "[Pasted text +N lines]" placeholder.
+    if grep -qF '[Pasted text' <<<"$input_line"; then
+      confirmed=1; break
+    fi
+    # Short messages: literal first line should appear after the prompt marker.
+    if [[ -n "$first_line" ]] && grep -qF -- "$first_line" <<<"$input_line"; then
+      confirmed=1; break
+    fi
+  done
+
+  if (( confirmed == 0 )); then
+    log "send: text never appeared in input on $target — aborting Enter"
+    # Clear whatever ended up there so the next attempt starts clean.
+    tmux send-keys -t "$target" Escape Escape 2>/dev/null || true
+    return 1
+  fi
+
+  # 3. Commit. If Enter dropped (input still holds the text 1.5s later), resend.
   tmux send-keys -t "$target" Enter
+  sleep 1.5
+  pane="$(capture "$target")"
+  input_line="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
+  if grep -qF '[Pasted text' <<<"$input_line" || \
+     { [[ -n "$first_line" ]] && grep -qF -- "$first_line" <<<"$input_line"; }; then
+    tmux send-keys -t "$target" Enter
+  fi
+  return 0
 }
 
 # Verify delivery: after sending, the input line should no longer hold our
