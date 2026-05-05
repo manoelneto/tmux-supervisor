@@ -93,6 +93,8 @@ Model choice:
 
 ## Communicating with workers — use `claude-msg`
 
+**`claude-msg` is a SHELL SCRIPT, not a Claude Code slash command.** Always invoke it via the Bash tool (or directly in a shell). Never type `claude-msg ...` into the Claude UI prompt box — Claude will treat it as user input, not execute it. This rule applies to BOTH the supervisor and every worker. Workers must invoke `claude-msg` through the Bash tool when reporting back, and supervisors must remind workers of this in every brief.
+
 All sends to Claude worker panes go through `claude-msg` (queue + daemon). Never call `tmux send-keys` directly against a Claude pane, and do not use the older `tmux-send` script — they don't wait for the pane to be ready and can interleave with user typing.
 
 `claude-msg` is non-blocking: it appends a message to `~/.claude/msg-queue/pending/` and returns immediately. A background daemon delivers FIFO, waiting per target until: Claude UI loaded + input box empty (no user is typing). It splits text+Enter, uses bracketed-paste for multiline, and verifies the input buffer cleared before archiving to `sent/`.
@@ -122,6 +124,8 @@ claude-msg --daemon-status              # is the worker running?
 Every worker brief must include this block so the worker knows how to report back without mangling messages. Substitute `<role>`, `$SESSION`, `<coord-window>` with concrete values:
 
 > You report to the supervisor in tmux window `<coord-window>` of session `<session>`. **Always use `claude-msg`** — never call `tmux send-keys` (or the older `tmux-send` script) directly against a Claude pane.
+>
+> **`claude-msg` is a SHELL SCRIPT, not a Claude Code slash command.** Invoke it via the Bash tool. Do NOT type `claude-msg ...` into your Claude prompt box — Claude will treat it as user input and the message will never be queued. Every report-back to coord must go through a Bash tool call.
 >
 > `claude-msg` is non-blocking: it queues your message and a background daemon delivers it once the supervisor's pane is ready (Claude loaded + input box empty + supervisor not currently typing). FIFO is preserved per target.
 >
@@ -193,6 +197,7 @@ When the task is done:
 - Producing the plan inside a worker window. You plan.
 - Letting the same window both implement and validate.
 - Bypassing `claude-msg` and calling `tmux send-keys` (or the older `tmux-send` script) directly against a Claude pane — Enter drops unpredictably and you race with the user / other senders.
+- Treating `claude-msg` as a Claude Code slash command. It is a shell script — must be invoked via the Bash tool. If a worker types `claude-msg ...` into its Claude prompt, the message is never queued and the worker silently appears "stuck" with the report sitting in its input box.
 - Spawning a `validate` worker when the user only asked for a fix — extra ceremony costs context.
 - Spawning a `review` of the plan when the task is small and the user didn't ask for one.
 - Auto-pushing or auto-merging when the final state has uncommitted changes.
