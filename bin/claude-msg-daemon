@@ -178,7 +178,10 @@ send_message() {
     return 1
   fi
 
-  # 3. Commit. If Enter dropped (input still holds the text 1.5s later), resend.
+  # 3. Commit. Brief settle so the TUI fully registers the buffer before Enter
+  # — without it, Enter occasionally lands while the pane is still rendering
+  # the paste/typing and gets dropped.
+  sleep 0.3
   tmux send-keys -t "$target" Enter
   sleep 1.5
   pane="$(capture "$target")"
