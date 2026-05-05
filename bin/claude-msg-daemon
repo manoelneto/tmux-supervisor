@@ -182,15 +182,27 @@ send_message() {
   # — without it, Enter occasionally lands while the pane is still rendering
   # the paste/typing and gets dropped.
   sleep 0.3
-  tmux send-keys -t "$target" Enter
-  sleep 1.5
-  pane="$(capture "$target")"
-  input_line="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
-  if grep -qF '[Pasted text' <<<"$input_line" || \
-     { [[ -n "$first_chunk" ]] && grep -qF -- "$first_chunk" <<<"$input_line"; }; then
+
+  # Retry Enter until the input buffer actually clears. Claude sometimes
+  # interprets a single Enter as "insert newline" (or drops it on a busy
+  # pane); resending until the input no longer holds the text/paste
+  # placeholder is the only reliable way to confirm the submit.
+  local enter_attempt
+  for enter_attempt in $(seq 1 8); do
     tmux send-keys -t "$target" Enter
-  fi
-  return 0
+    sleep 1.0
+    pane="$(capture "$target")"
+    input_line="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
+    if ! grep -qF '[Pasted text' <<<"$input_line" \
+       && { [[ -z "$first_chunk" ]] || ! grep -qF -- "$first_chunk" <<<"$input_line"; }; then
+      # Buffer no longer holds our text → submitted.
+      (( enter_attempt > 1 )) && log "send: Enter took $enter_attempt attempts on $target"
+      return 0
+    fi
+  done
+
+  log "send: Enter never cleared input on $target after 8 attempts"
+  return 1
 }
 
 # Verify delivery: after sending, the input line should no longer hold our
