@@ -23,6 +23,7 @@ into the same pane.
 | ----------------------------- | -------------------------------------------------------------------------- |
 | `bin/claude-msg`              | CLI submitter. Non-blocking. Auto-spawns the daemon.                       |
 | `bin/claude-msg-daemon`       | Single-instance worker (flock). Drains the queue.                          |
+| `bin/claude-coord`            | Spin up a tmux "coord" session with Claude + `/tmux-supervisor` + `/caveman` pre-loaded, then attach. |
 | `bin/tmux-send`               | Older one-shot send wrapper. Kept for ad-hoc use; **prefer `claude-msg`**. |
 | `commands/tmux-supervisor.md` | Slash-command skill that orchestrates a Claude supervisor + workers.       |
 | `setup.sh`                    | Symlinks all of the above into `~/.local/bin` and `~/.claude/commands`.    |
@@ -47,7 +48,7 @@ cd ~/dev/tmux-supervisor
 
 This symlinks:
 
-- `~/.local/bin/{claude-msg,claude-msg-daemon,tmux-send}` → `bin/*`
+- `~/.local/bin/{claude-msg,claude-msg-daemon,claude-coord,tmux-send}` → `bin/*`
 - `~/.claude/commands/tmux-supervisor.md` → `commands/tmux-supervisor.md`
 
 and ensures `~/.claude/msg-queue/{pending,sent,failed}` exists.
@@ -130,30 +131,23 @@ is available as `/tmux-supervisor` in any Claude Code session.
 non-Claude panes (or when you genuinely want synchronous fire-and-forget).
 For anything talking to a Claude TUI, prefer `claude-msg`.
 
-## Suggested shell helper
+### `claude-coord`
 
-Drop this into your `~/.zshrc` / `~/.bashrc` to spin up a coord session
-with Claude pre-configured for orchestration:
+`setup.sh` installs `claude-coord` into `~/.local/bin/`. Use it to spin up
+a tmux "coord" session with Claude already in `/tmux-supervisor` mode:
 
 ```bash
-claude-coord() {
-  if [ -z "$1" ]; then
-    echo "Usage: claude-coord <slug>"
-    return 1
-  fi
-  local slug="$1"
-  local target="${slug}:coord"
-  tmux new-session -d -s "$slug" -n coord
-  tmux select-pane -t "$target" -T "claude-coord-${slug}"
-  tmux send-keys -t "$target" "claude --dangerously-skip-permissions --worktree $slug" Enter
-
-  # Non-blocking: claude-msg's daemon waits for the TUI to be ready before
-  # delivering. No manual sleeps required.
-  claude-msg "$target" "/tmux-supervisor"
-  claude-msg "$target" "/caveman"
-  tmux attach -t "$slug"
-}
+claude-coord my-feature
 ```
+
+That:
+
+1. creates tmux session `my-feature` with one window `coord`,
+2. boots `claude --dangerously-skip-permissions --worktree my-feature`,
+3. queues `/tmux-supervisor` then `/caveman` through `claude-msg`,
+4. attaches your terminal to the session.
+
+If a session with that name already exists, `claude-coord` just attaches.
 
 ## Development
 

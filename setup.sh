@@ -34,7 +34,7 @@ link_into() {
 echo "tmux-supervisor: installing from $REPO_DIR"
 echo
 echo "binaries -> $LOCAL_BIN"
-for name in claude-msg claude-msg-daemon tmux-send; do
+for name in claude-msg claude-msg-daemon claude-coord tmux-send; do
   link_into "$REPO_DIR/bin/$name" "$LOCAL_BIN/$name"
   chmod +x "$REPO_DIR/bin/$name"
 done

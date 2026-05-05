@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# claude-coord: spin up a tmux "coord" session running Claude with the
+# /tmux-supervisor + /caveman commands pre-dispatched, then attach.
+#
+# Usage:
+#   claude-coord <slug>
+#
+# What it does:
+#   1. Creates tmux session named <slug> with one window "coord".
+#   2. Names the pane "claude-coord-<slug>" (used by some skills).
+#   3. Launches `claude --dangerously-skip-permissions --worktree <slug>`.
+#   4. Polls the pane until Claude's TUI is visible.
+#   5. Queues `/tmux-supervisor` and `/caveman` via claude-msg (FIFO,
+#      non-blocking; daemon waits for readiness between sends).
+#   6. Attaches your terminal to the session.
+#
+# Deps: tmux, claude (Claude Code CLI), claude-msg (this repo).
+
+set -euo pipefail
+
+if [[ $# -lt 1 || -z "${1:-}" ]]; then
+  echo "Usage: claude-coord <slug>" >&2
+  exit 1
+fi
+
+slug="$1"
+target="${slug}:coord"
+
+if ! command -v claude-msg >/dev/null 2>&1; then
+  echo "claude-coord: claude-msg not found in PATH; run setup.sh from this repo" >&2
+  exit 1
+fi
+
+# If the session already exists, just attach.
+if tmux has-session -t "$slug" 2>/dev/null; then
+  echo "claude-coord: session '$slug' already exists, attaching"
+  exec tmux attach -t "$slug"
+fi
+
+tmux new-session -d -s "$slug" -n coord
+tmux select-pane -t "$target" -T "claude-coord-${slug}"
+tmux send-keys -t "$target" "claude --dangerously-skip-permissions --worktree $slug" Enter
+
+# claude-msg's daemon checks pane readiness (Claude TUI loaded + input box
+# empty) before each send, so we can fire-and-forget these immediately. No
+# polling, no sleeps.
+claude-msg "$target" "/tmux-supervisor"
+claude-msg "$target" "/caveman"
+
+exec tmux attach -t "$slug"
