@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# claude-msg: enqueue a message for delivery to a Claude tmux pane.
+#
+# Non-blocking: writes the message to ~/.claude/msg-queue/pending/ and exits.
+# A daemon (claude-msg-daemon) drains the queue, waits for each target pane
+# to be ready (Claude UI loaded + input box empty), types the message, and
+# verifies delivery before archiving to sent/.
+#
+# Usage:
+#   claude-msg <session:window> "message text"
+#   claude-msg <session:window> --read-file <path>
+#   claude-msg --list
+#   claude-msg --flush <session:window>
+#   claude-msg --daemon-start
+#   claude-msg --daemon-stop
+#   claude-msg --daemon-status
+
+set -euo pipefail
+
+QUEUE_DIR="${CLAUDE_MSG_QUEUE_DIR:-$HOME/.claude/msg-queue}"
+PENDING="$QUEUE_DIR/pending"
+SENT="$QUEUE_DIR/sent"
+FAILED="$QUEUE_DIR/failed"
+DAEMON_PID="$QUEUE_DIR/daemon.pid"
+DAEMON_LOG="$QUEUE_DIR/daemon.log"
+DAEMON_BIN="${CLAUDE_MSG_DAEMON:-$HOME/.local/bin/claude-msg-daemon}"
+
+mkdir -p "$PENDING" "$SENT" "$FAILED"
+
+usage() {
+  sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-2}"
+}
+
+ensure_daemon() {
+  if [[ -f "$DAEMON_PID" ]] && kill -0 "$(cat "$DAEMON_PID")" 2>/dev/null; then
+    return 0
+  fi
+  [[ -x "$DAEMON_BIN" ]] || { echo "claude-msg: daemon binary missing: $DAEMON_BIN" >&2; return 1; }
+  : > "$DAEMON_LOG"   # fresh log per daemon start
+  nohup "$DAEMON_BIN" >>"$DAEMON_LOG" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  echo "claude-msg: started daemon (pid $!)" >&2
+}
+
+cmd_list() {
+  shopt -s nullglob
+  local files=("$PENDING"/*.json)
+  if (( ${#files[@]} == 0 )); then
+    echo "(no pending messages)"
+    return 0
+  fi
+  for f in "${files[@]}"; do
+    local target msg
+    target="$(grep -oP '"target":\s*"\K[^"]+' "$f" || echo '?')"
+    msg="$(grep -oP '"message":\s*"\K[^"]*' "$f" | head -c 80 || echo '?')"
+    printf '%s  -> %-30s  %s\n' "$(basename "$f")" "$target" "$msg"
+  done
+}
+
+cmd_flush() {
+  local target="$1"
+  shopt -s nullglob
+  local n=0
+  for f in "$PENDING"/*.json; do
+    if grep -q "\"target\":\s*\"$target\"" "$f"; then
+      mv "$f" "$FAILED/"
+      ((n++))
+    fi
+  done
+  echo "claude-msg: flushed $n message(s) for $target"
+}
+
+daemon_status() {
+  if [[ -f "$DAEMON_PID" ]] && kill -0 "$(cat "$DAEMON_PID")" 2>/dev/null; then
+    echo "daemon running (pid $(cat "$DAEMON_PID"))"
+  else
+    echo "daemon not running"
+  fi
+}
+
+daemon_stop() {
+  [[ -f "$DAEMON_PID" ]] || { echo "no pid file"; return 0; }
+  local pid; pid="$(cat "$DAEMON_PID")"
+  kill "$pid" 2>/dev/null || true
+  rm -f "$DAEMON_PID"
+  echo "claude-msg: stopped daemon (pid $pid)"
+}
+
+# --- arg parsing ---
+[[ $# -ge 1 ]] || usage
+
+case "$1" in
+  --list)            cmd_list; exit 0 ;;
+  --flush)           shift; [[ $# -ge 1 ]] || usage; cmd_flush "$1"; exit 0 ;;
+  --daemon-start)    ensure_daemon; exit 0 ;;
+  --daemon-stop)     daemon_stop; exit 0 ;;
+  --daemon-status)   daemon_status; exit 0 ;;
+  -h|--help)         usage 0 ;;
+esac
+
+[[ $# -ge 2 ]] || usage
+
+target="$1"; shift
+
+if [[ "${1:-}" == "--read-file" ]]; then
+  [[ $# -ge 2 ]] || { echo "claude-msg: --read-file requires path" >&2; exit 2; }
+  [[ -r "$2" ]] || { echo "claude-msg: cannot read $2" >&2; exit 1; }
+  message="$(cat "$2")"
+else
+  message="$*"
+fi
+
+# Validate target shape: session:window[.pane]
+if ! [[ "$target" =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(\.[0-9]+)?$ ]]; then
+  echo "claude-msg: target must be session:window or session:window.pane" >&2
+  exit 2
+fi
+
+# JSON-escape the message body.
+escape_json() {
+  python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'
+}
+
+ts="$(date +%s%N)"
+uuid="$(cat /proc/sys/kernel/random/uuid)"
+safe_target="${target//[^A-Za-z0-9_.-]/_}"
+file="$PENDING/${ts}-${safe_target}-${uuid}.json"
+tmp="${file}.tmp"
+
+{
+  printf '{'
+  printf '"target":%s,' "$(printf '%s' "$target" | escape_json)"
+  printf '"message":%s,' "$(printf '%s' "$message" | escape_json)"
+  printf '"created_at":"%s",' "$(date -Iseconds)"
+  printf '"attempts":0'
+  printf '}'
+} > "$tmp"
+mv "$tmp" "$file"
+
+echo "claude-msg: queued -> $(basename "$file")"
+ensure_daemon || true

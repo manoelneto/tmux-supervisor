@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# claude-msg-daemon: drain ~/.claude/msg-queue/pending and deliver to tmux panes.
+#
+# For each pending message (FIFO by filename timestamp, per-target):
+#   1. Wait until target pane is "ready":
+#        - tmux session/window exists
+#        - Claude UI loaded (prompt box border visible)
+#        - input box empty (no in-progress user typing)
+#   2. Send literal text + Enter (split, with retry — same logic as tmux-send).
+#   3. Verify the input buffer cleared / message rendered in transcript.
+#   4. Move file to sent/ on success, failed/ after MAX_ATTEMPTS.
+#
+# Single-instance enforced via flock on $LOCK.
+# Run via: claude-msg --daemon-start (auto-spawned by claude-msg).
+
+set -euo pipefail
+
+QUEUE_DIR="${CLAUDE_MSG_QUEUE_DIR:-$HOME/.claude/msg-queue}"
+PENDING="$QUEUE_DIR/pending"
+SENT="$QUEUE_DIR/sent"
+FAILED="$QUEUE_DIR/failed"
+PID_FILE="$QUEUE_DIR/daemon.pid"
+LOCK="$QUEUE_DIR/.daemon.lock"
+
+IDLE_TICK="${CLAUDE_MSG_IDLE_TICK:-2}"      # seconds between scans when nothing to do
+WORK_TICK="${CLAUDE_MSG_WORK_TICK:-1}"      # seconds between checks for a pending msg
+MAX_ATTEMPTS="${CLAUDE_MSG_MAX_ATTEMPTS:-10}"           # send-fail / target-gone / unverified retries
+MAX_READINESS_WAIT="${CLAUDE_MSG_MAX_READINESS_WAIT:-3600}"  # seconds to keep waiting for an in-use pane (default 1h)
+PASTE_THRESHOLD="${CLAUDE_MSG_PASTE_LINES:-2}"  # lines >= this -> bracketed paste mode
+
+mkdir -p "$PENDING" "$SENT" "$FAILED"
+
+# Single-instance lock.
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "claude-msg-daemon: another instance is running" >&2
+  exit 0
+fi
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
+
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+
+# --- pane state helpers ---
+
+pane_exists() {
+  local target="$1"
+  tmux has-session -t "${target%%:*}" 2>/dev/null || return 1
+  tmux list-panes -t "$target" >/dev/null 2>&1
+}
+
+capture() {
+  tmux capture-pane -p -t "$1" 2>/dev/null || true
+}
+
+# Capture with ANSI escapes preserved — used to detect dim/faint placeholder text.
+capture_raw() {
+  tmux capture-pane -e -p -t "$1" 2>/dev/null || true
+}
+
+# Returns 0 if the last prompt line is a Claude-rendered placeholder (dim text),
+# i.e. visually empty even though characters appear in the stripped capture.
+is_placeholder_input() {
+  local raw last
+  raw="$(capture_raw "$1")"
+  # Last line containing the input prompt marker.
+  last="$(grep -aE '❯' <<<"$raw" | tail -n 1 || true)"
+  [[ -n "$last" ]] || return 1
+  # Strip ONLY the reverse-video opener + the single inverted char. Leave the
+  # following SGR escape intact — that one carries the dim-or-not state we
+  # care about (`\e[0;2m` for placeholder, no dim for real typed text).
+  last="$(printf '%s' "$last" | sed -E $'s/\x1b\\[7m.//')"
+  printf '%s' "$last" | grep -qE $'\x1b\\[(0;)?2m'
+}
+
+# Ready = Claude UI loaded AND input box empty.
+# Heuristics:
+#   loaded -> tail contains a Claude box border line ("╭─...─╮" or "╰─...─╯")
+#             OR "? for shortcuts" footer
+#   empty  -> the line containing "> " inside the box is empty after the marker
+is_ready() {
+  local target="$1"
+  local pane
+  pane="$(capture "$target")"
+  [[ -n "$pane" ]] || return 1
+
+  # Loaded check — match any Claude TUI variant we've seen:
+  #   - boxed UI: "╭─...─╮" / "╰─...─╯"
+  #   - plain UI: "❯ " input cursor + footer "bypass permissions" / "shift+tab to cycle"
+  #   - common: "? for shortcuts" footer
+  if ! grep -qE '╭─+|╰─+|\? for shortcuts|Bypassing Permissions|bypass permissions on|shift\+tab to cycle|❯' <<<"$pane"; then
+    return 1
+  fi
+
+  # Input-box content check. Try each known prompt style:
+  #   "│ > <text>"     (boxed)
+  #   "> <text>"       (plain prompt)
+  #   "❯ <text>"       (newer TUI; placeholder = "Try \"...\"")
+  # NOTE: Claude renders `❯` followed by U+00A0 (non-breaking space), not ASCII
+  # space. Don't gate on [[:space:]] after the prompt marker.
+  # Use only the LAST prompt-marker line — earlier ones are transcript
+  # echoes of previously submitted messages, not the active input.
+  local input_lines
+  input_lines="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
+  [[ -n "$input_lines" ]] || return 1
+
+  # Strip border chars + leading prompt marker (incl. NBSP) + trailing whitespace.
+  local body
+  body="$(printf '%s\n' "$input_lines" \
+    | sed -E 's/│//g; s/^[[:space:]]*(❯|>)[[:space:]\xc2\xa0]?//; s/[[:space:]\xc2\xa0]+$//' \
+    | tr -d '\n')"
+
+  # Empty -> ready.
+  [[ -z "$body" ]] && return 0
+
+  # Placeholder text counts as empty. Two signals:
+  #   1. ANSI dim/faint SGR wraps the visible chars (Claude renders suggestions
+  #      dimmed; real user typing has normal attributes).
+  #   2. Legacy "Try \"...\"" shape, in case escape capture is unavailable.
+  if is_placeholder_input "$target"; then
+    return 0
+  fi
+  if [[ "$body" =~ ^Try\ \" ]] || [[ "$body" =~ \.\.\.\"\)?$ ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+# --- send + verify ---
+
+send_message() {
+  local target="$1" text="$2"
+  local line_count
+  line_count="$(printf '%s' "$text" | awk 'END{print NR}')"
+  # awk on a string without trailing newline reports 0; treat as 1.
+  (( line_count == 0 )) && line_count=1
+
+  if (( line_count >= PASTE_THRESHOLD )); then
+    # Bracketed paste so multiline lands as one [Pasted text] block, not
+    # multiple submits.
+    tmux send-keys -t "$target" -l $'\e[200~'
+    tmux send-keys -t "$target" -l -- "$text"
+    tmux send-keys -t "$target" -l $'\e[201~'
+  else
+    tmux send-keys -t "$target" -l -- "$text"
+  fi
+  sleep 0.4
+  tmux send-keys -t "$target" Enter
+}
+
+# Verify delivery: after sending, the input line should no longer hold our
+# literal text. Acceptable end states:
+#   - input box empty again (is_ready true)
+#   - bracketed-paste placeholder ("[Pasted text") visible
+#   - input-line body is now empty / placeholder / different from `text`
+#     (Claude swallowed the input — help overlay, slash menu, in-progress run, etc.)
+verify_sent() {
+  local target="$1" text="$2"
+  local first_line
+  first_line="$(printf '%s' "$text" | head -n1)"
+  for _ in 1 2 3 4 5 6; do
+    sleep 1
+    local pane
+    pane="$(capture "$target")"
+
+    if is_ready "$target"; then
+      return 0
+    fi
+    if grep -qF "[Pasted text" <<<"$pane"; then
+      return 0
+    fi
+
+    # Extract whatever sits on the prompt line. If our literal text isn't
+    # there, the buffer has moved on -> treat as delivered.
+    local input_lines body
+    input_lines="$(grep -E '^[[:space:]]*(│[[:space:]]*>|>[[:space:]]|❯)' <<<"$pane" | tail -n 1 || true)"
+    body="$(printf '%s\n' "$input_lines" \
+      | sed -E 's/│//g; s/^[[:space:]]*(❯|>)[[:space:]\xc2\xa0]?//; s/[[:space:]\xc2\xa0]+$//' \
+      | tr -d '\n')"
+    if ! grep -qF -- "$first_line" <<<"$body"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- queue processing ---
+
+process_one() {
+  local file="$1"
+  local target message attempts created
+  target="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["target"])' "$file" 2>/dev/null || echo '')"
+  message="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["message"])' "$file" 2>/dev/null || echo '')"
+  attempts="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("attempts",0))' "$file" 2>/dev/null || echo 0)"
+  created="$(python3 -c 'import json,sys,datetime;print(int(datetime.datetime.fromisoformat(json.load(open(sys.argv[1]))["created_at"]).timestamp()))' "$file" 2>/dev/null || echo 0)"
+
+  if [[ -z "$target" ]]; then
+    log "bad file (no target): $(basename "$file") -> failed/"
+    mv "$file" "$FAILED/"
+    return
+  fi
+
+  if ! pane_exists "$target"; then
+    log "target not found: $target (attempt $attempts)"
+    bump_attempts "$file" "$attempts" "$MAX_ATTEMPTS" "target gone"
+    return
+  fi
+
+  if ! is_ready "$target"; then
+    # Target is alive but busy / user-typing. Wait up to MAX_READINESS_WAIT.
+    local now age
+    now=$(date +%s)
+    age=$(( now - created ))
+    if (( age > MAX_READINESS_WAIT )); then
+      log "giving up on $(basename "$file"): readiness timeout (${age}s > ${MAX_READINESS_WAIT}s)"
+      mv "$file" "$FAILED/"
+      return
+    fi
+    # Quiet the log: only print every 30s of waiting.
+    if (( age % 30 == 0 )); then
+      log "waiting for $target (age ${age}s, user/busy)"
+    fi
+    return
+  fi
+
+  log "sending to $target ($(basename "$file"))"
+  if ! send_message "$target" "$message"; then
+    log "send failed on $target"
+    bump_attempts "$file" "$attempts" "$MAX_ATTEMPTS" "send failed"
+    return
+  fi
+
+  if verify_sent "$target" "$message"; then
+    mv "$file" "$SENT/"
+    log "delivered -> $target"
+  else
+    log "could not verify delivery on $target"
+    bump_attempts "$file" "$attempts" "$MAX_ATTEMPTS" "unverified"
+  fi
+}
+
+bump_attempts() {
+  local file="$1" attempts="$2" max="$3" reason="$4"
+  attempts=$((attempts + 1))
+  if (( attempts >= max )); then
+    log "giving up on $(basename "$file"): $reason"
+    mv "$file" "$FAILED/"
+    return
+  fi
+  python3 -c '
+import json,sys
+p=sys.argv[1]
+d=json.load(open(p))
+d["attempts"]=int(sys.argv[2])
+json.dump(d,open(p,"w"))
+' "$file" "$attempts"
+}
+
+# Drain in FIFO order (filenames are timestamp-prefixed).
+drain() {
+  shopt -s nullglob
+  local files=("$PENDING"/*.json)
+  (( ${#files[@]} == 0 )) && return 1
+  IFS=$'\n' files=($(printf '%s\n' "${files[@]}" | sort))
+  for f in "${files[@]}"; do
+    [[ -f "$f" ]] || continue
+    process_one "$f"
+  done
+  return 0
+}
+
+log "claude-msg-daemon started (pid $$)"
+while true; do
+  if drain; then
+    sleep "$WORK_TICK"
+  else
+    sleep "$IDLE_TICK"
+  fi
+done

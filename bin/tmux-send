@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# tmux-send: reliably send text + Enter to a tmux pane running Claude.
+#
+# Why this exists: `tmux send-keys <pane> "text" Enter` in a single call
+# sometimes drops the Enter against Claude's input box. We split the send,
+# pause, then verify the buffer cleared; if it didn't, we resend Enter.
+#
+# Usage:
+#   tmux-send <target-pane> <text>
+#   tmux-send <target-pane> --file <path>
+#
+# Examples:
+#   tmux-send worker:0.0 "run the tests"
+#   tmux-send worker:0.0 --file /tmp/prompt.txt
+
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+  echo "usage: tmux-send <target-pane> <text>" >&2
+  echo "       tmux-send <target-pane> --file <path>" >&2
+  exit 2
+fi
+
+target="$1"; shift
+
+if [[ "${1:-}" == "--file" ]]; then
+  [[ $# -ge 2 ]] || { echo "tmux-send: --file requires a path" >&2; exit 2; }
+  text="$(cat "$2")"
+else
+  text="$*"
+fi
+
+if ! tmux has-session -t "${target%%:*}" 2>/dev/null; then
+  echo "tmux-send: no such session: ${target%%:*}" >&2
+  exit 1
+fi
+
+# Ensure the janitor is running as a safety net. Skip with TMUX_SEND_NO_JANITOR=1.
+ensure_janitor() {
+  [[ "${TMUX_SEND_NO_JANITOR:-0}" == "1" ]] && return 0
+  pgrep -fu "$USER" 'tmux-janitor' >/dev/null 2>&1 && return 0
+
+  local janitor_script
+  janitor_script="$(dirname "$(readlink -f "$0")")/tmux-janitor"
+  [[ -x "$janitor_script" ]] || return 0
+
+  local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-send"
+  mkdir -p "$log_dir"
+  nohup "$janitor_script" >>"$log_dir/janitor.log" 2>&1 </dev/null &
+  disown 2>/dev/null || true
+  echo "tmux-send: started tmux-janitor (pid $!, log $log_dir/janitor.log)" >&2
+}
+ensure_janitor
+
+# Snapshot pane so we can detect whether Enter took effect.
+before="$(tmux capture-pane -p -t "$target" | tail -n 20 || true)"
+
+# Literal send (no key-name interpretation), then a pause, then Enter.
+tmux send-keys -t "$target" -l -- "$text"
+sleep 0.4
+tmux send-keys -t "$target" Enter
+
+# Verify: if the literal text still sits at the prompt unchanged, retry Enter.
+for attempt in 1 2 3; do
+  sleep 1.2
+  after="$(tmux capture-pane -p -t "$target" | tail -n 20 || true)"
+  if [[ "$after" != "$before" ]] && ! echo "$after" | grep -qF -- "$text"; then
+    exit 0
+  fi
+  # Still showing the unsent text — nudge Enter again.
+  tmux send-keys -t "$target" Enter
+done
+
+echo "tmux-send: sent but could not confirm buffer cleared on $target" >&2
+exit 0

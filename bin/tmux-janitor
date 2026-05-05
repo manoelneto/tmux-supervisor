@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# tmux-janitor: watch supervised tmux panes for stuck input and press Enter.
+#
+# A pane is "supervised" if its name starts with `claude-` (rename with
+# `tmux select-pane -T claude-worker-1` or set via the spawner).
+#
+# For each supervised pane: capture the tail, wait, capture again. If the
+# tail is identical for N consecutive samples AND the last non-empty line
+# looks like a Claude input box (starts with `>` or `│`), send Enter.
+#
+# Usage: tmux-janitor [--interval SECS] [--stable-samples N] [--once]
+
+set -euo pipefail
+
+interval=10
+stable=3
+once=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --interval) interval="$2"; shift 2;;
+    --stable-samples) stable="$2"; shift 2;;
+    --once) once=1; shift;;
+    *) echo "tmux-janitor: unknown arg $1" >&2; exit 2;;
+  esac
+done
+
+declare -A history_count history_last
+
+looks_like_unsent_prompt() {
+  # Heuristic: last non-empty line is a Claude input-box line with content.
+  local tail_lines="$1"
+  local last
+  last="$(echo "$tail_lines" | awk 'NF {line=$0} END {print line}')"
+  [[ -n "$last" ]] || return 1
+  # Claude's input box typically starts with "> " or a box-drawing char.
+  [[ "$last" =~ ^(\>|\│|\|).+[A-Za-z0-9] ]] || return 1
+  # Escape hatch: messages starting with "human" are the user's — don't send.
+  # Strip leading box/prompt chars and whitespace, then check.
+  local body
+  body="$(echo "$last" | sed -E 's/^[>│|[:space:]]+//')"
+  [[ "$body" =~ ^[Hh]uman ]] && return 1
+  return 0
+}
+
+run_pass() {
+  local panes
+  panes="$(tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_title}' 2>/dev/null || true)"
+  [[ -n "$panes" ]] || return 0
+
+  while IFS= read -r row; do
+    local target title
+    target="${row%% *}"
+    title="${row#* }"
+    [[ "$title" == claude-* ]] || continue
+
+    local sample
+    sample="$(tmux capture-pane -p -t "$target" 2>/dev/null | tail -n 6 || true)"
+    [[ -n "$sample" ]] || continue
+
+    local prev="${history_last[$target]:-}"
+    if [[ "$sample" == "$prev" ]]; then
+      history_count[$target]=$(( ${history_count[$target]:-0} + 1 ))
+    else
+      history_count[$target]=1
+      history_last[$target]="$sample"
+    fi
+
+    if (( ${history_count[$target]} >= stable )) && looks_like_unsent_prompt "$sample"; then
+      echo "[$(date +%H:%M:%S)] tmux-janitor: nudging Enter on $target ($title)" >&2
+      tmux send-keys -t "$target" Enter
+      history_count[$target]=0
+    fi
+  done <<< "$panes"
+}
+
+if (( once )); then
+  run_pass
+  exit 0
+fi
+
+while true; do
+  run_pass
+  sleep "$interval"
+done
