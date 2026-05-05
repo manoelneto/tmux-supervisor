@@ -24,7 +24,6 @@ into the same pane.
 | `bin/claude-msg`              | CLI submitter. Non-blocking. Auto-spawns the daemon.                       |
 | `bin/claude-msg-daemon`       | Single-instance worker (flock). Drains the queue.                          |
 | `bin/tmux-send`               | Older one-shot send wrapper. Kept for ad-hoc use; **prefer `claude-msg`**. |
-| `bin/tmux-janitor`            | Watches supervised panes and nudges Enter on stuck input.                  |
 | `commands/tmux-supervisor.md` | Slash-command skill that orchestrates a Claude supervisor + workers.       |
 | `setup.sh`                    | Symlinks all of the above into `~/.local/bin` and `~/.claude/commands`.    |
 
@@ -48,7 +47,7 @@ cd ~/dev/tmux-supervisor
 
 This symlinks:
 
-- `~/.local/bin/{claude-msg,claude-msg-daemon,tmux-send,tmux-janitor}` → `bin/*`
+- `~/.local/bin/{claude-msg,claude-msg-daemon,tmux-send}` → `bin/*`
 - `~/.claude/commands/tmux-supervisor.md` → `commands/tmux-supervisor.md`
 
 and ensures `~/.claude/msg-queue/{pending,sent,failed}` exists.
