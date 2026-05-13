@@ -141,7 +141,7 @@ if [[ "$footer_mode" != "none" && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-
     else
       message="${message}
 
-[If a reply is needed, send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is needed, just act.]"
+[If reply is expected, send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is expected, just act.]"
     fi
   fi
 fi

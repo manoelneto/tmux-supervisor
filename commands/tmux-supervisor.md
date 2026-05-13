@@ -121,7 +121,7 @@ claude-msg --daemon-status              # is the worker running?
 
 **Auto-footer (reply hint).** `claude-msg` auto-appends a footer that names the sender's `session:window` and shows the exact Bash invocation for replying. Receivers can't see your tmux pane and plain pane output is invisible across sessions, so the footer is their anti-amnesia hint. Three modes:
 
-- **default (conditional)** — `[If a reply is needed, send via: claude-msg "<sender>:<window>" "your reply" … If no reply is needed, just act.]` — soft hint; receiver decides whether content warrants a reply.
+- **default (conditional)** — `[If reply is expected, send via: claude-msg "<sender>:<window>" "your reply" … If no reply is expected, just act.]` — soft hint; receiver decides whether content warrants a reply.
 - **`--needs-reply`** — `[reply expected — send via: …]` — explicit pressure when sender wants confirmation.
 - **`--no-footer`** — no footer at all. Use for system broadcasts where no reply is ever expected (e.g. infra notices).
 
