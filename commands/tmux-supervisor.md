@@ -127,20 +127,6 @@ claude-msg --daemon-status              # is the worker running?
 
 Order matters: flags come AFTER target. Example: `claude-msg "<target>" --needs-reply --read-file <path>`. Footer is also skipped when not inside tmux, when sender == target, or when `CLAUDE_MSG_NO_FOOTER=1` env is set.
 
-## Routing corrections — when a worker pings the wrong supervisor
-
-If a worker reports to you but you are NOT its assigned supervisor (e.g. handoff in progress, brief had stale target, footer carried wrong address), do BOTH steps before doing anything else with the message:
-
-1. **Redirect the worker.** Send a short `--no-footer` message naming the correct supervisor + the exact `claude-msg` invocation they should use going forward. Tell them to update their `/tmp/<role>-brief.md` "Supervisor target" line so compaction doesn't restore the wrong address.
-2. **Investigate root cause.** Pick one:
-   - **Brief content** — read `/tmp/<role>-brief.md`; if it names the wrong supervisor, the spawning coord wrote a bad brief — flag the spawning coord.
-   - **Footer carry-over** — if the worker is replying to a footer from a previous message you (or an old coord) sent, that's expected; the redirect itself fixes it.
-   - **Handoff in progress** — if you are an old supervisor in transition, redirect + FYI the new supervisor (`--no-footer`) so they know the worker exists.
-   - **Spawning convention drift** — if multiple workers ping the wrong coord, the spawning protocol (claude-coord launch, brief template) likely has stale supervisor-target text. Fix the template.
-3. **Forward the original question** to the correct supervisor (or answer it yourself + FYI the correct supervisor) so progress isn't lost.
-
-Never silently absorb a misrouted message — always redirect, root-cause, and forward.
-
 ## Briefing workers — embed this verbatim in every brief
 
 Every worker brief must include this block so the worker knows how to report back without mangling messages. Substitute `<role>`, `$SESSION`, `<coord-window>` with concrete values:
