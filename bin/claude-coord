@@ -44,7 +44,7 @@ tmux send-keys -t "$target" "claude --dangerously-skip-permissions --worktree $s
 # claude-msg's daemon checks pane readiness (Claude TUI loaded + input box
 # empty) before each send, so we can fire-and-forget these immediately. No
 # polling, no sleeps.
-claude-msg "$target" "/tmux-supervisor"
-claude-msg "$target" "/caveman"
+claude-msg "$target" --no-footer "/tmux-supervisor"
+claude-msg "$target" --no-footer "/caveman"
 
 exec tmux attach -t "$slug"
