@@ -119,6 +119,12 @@ claude-msg --daemon-status              # is the worker running?
 - No `sleep` is needed between consecutive `claude-msg` calls to the same window — the daemon serializes by FIFO and waits for readiness between sends.
 - The launch-claude `send-keys "claude ..." Enter` line is the only place text+Enter goes in one call — that Enter goes to a shell, not Claude. After that, the first `claude-msg` will wait for the TUI itself; no manual `sleep 12` needed.
 
+**Auto-footer (reply hint).** `claude-msg` auto-appends a one-line footer to every outgoing message that names the sender's `session:window` and tells the receiver how to reply via `claude-msg`. This is the receiver's anti-amnesia hint — they can't see your tmux pane, and plain pane output is invisible across sessions. Footer looks like:
+```
+[reply via: `claude-msg "<sender>:<window>" "your reply text"` invoked through the Bash tool — plain pane output is invisible to me]
+```
+Opt out with `--no-footer` flag (use sparingly, e.g. system broadcasts where no reply is expected) or set `CLAUDE_MSG_NO_FOOTER=1`. Skipped automatically when not inside tmux or when sender == target.
+
 ## Briefing workers — embed this verbatim in every brief
 
 Every worker brief must include this block so the worker knows how to report back without mangling messages. Substitute `<role>`, `$SESSION`, `<coord-window>` with concrete values:
