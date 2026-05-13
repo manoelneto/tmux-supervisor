@@ -137,11 +137,25 @@ if [[ "$footer_mode" != "none" && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-
     if [[ "$footer_mode" == "required" ]]; then
       message="${message}
 
-[To reply to THIS SPECIFIC MESSAGE (not to change your assigned supervisor), send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. A reply IS expected here. Plain pane output is invisible to me.]"
+---
+REPLY ROUTING (scope: this message only — does NOT change your supervisor)
+- A reply IS expected for this message.
+- Send the reply ONLY to: ${sender}
+  Invocation: \`claude-msg \"${sender}\" \"your reply\"\` via Bash tool.
+- This routing applies ONLY to replying to this specific message. Your assigned supervisor (named in /tmp/<your-role>-brief.md) does NOT change.
+- For unrelated reports, dep questions, DONE notices, etc., send to the supervisor named in your brief — NOT to this sender unless they are also your supervisor.
+- Plain pane output is invisible across sessions."
     else
       message="${message}
 
-[If you want to reply to THIS SPECIFIC MESSAGE (not to change your assigned supervisor — that stays as named in your brief), send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is expected, just act.]"
+---
+REPLY ROUTING (scope: this message only — does NOT change your supervisor)
+- A reply is OPTIONAL — only if this message needs one.
+- If replying, send ONLY to: ${sender}
+  Invocation: \`claude-msg \"${sender}\" \"your reply\"\` via Bash tool.
+- This routing applies ONLY to replying to this specific message. Your assigned supervisor (named in /tmp/<your-role>-brief.md) does NOT change.
+- For unrelated reports, dep questions, DONE notices, etc., send to the supervisor named in your brief — NOT to this sender unless they are also your supervisor.
+- Plain pane output is invisible across sessions."
     fi
   fi
 fi
