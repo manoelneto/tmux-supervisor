@@ -119,11 +119,13 @@ claude-msg --daemon-status              # is the worker running?
 - No `sleep` is needed between consecutive `claude-msg` calls to the same window — the daemon serializes by FIFO and waits for readiness between sends.
 - The launch-claude `send-keys "claude ..." Enter` line is the only place text+Enter goes in one call — that Enter goes to a shell, not Claude. After that, the first `claude-msg` will wait for the TUI itself; no manual `sleep 12` needed.
 
-**Auto-footer (reply hint).** `claude-msg` auto-appends a one-line footer to every outgoing message that names the sender's `session:window` and tells the receiver how to reply via `claude-msg`. This is the receiver's anti-amnesia hint — they can't see your tmux pane, and plain pane output is invisible across sessions. Footer looks like:
-```
-[reply via: `claude-msg "<sender>:<window>" "your reply text"` invoked through the Bash tool — plain pane output is invisible to me]
-```
-Opt out with `--no-footer` flag (use sparingly, e.g. system broadcasts where no reply is expected) or set `CLAUDE_MSG_NO_FOOTER=1`. Skipped automatically when not inside tmux or when sender == target.
+**Auto-footer (reply hint).** `claude-msg` auto-appends a footer that names the sender's `session:window` and shows the exact Bash invocation for replying. Receivers can't see your tmux pane and plain pane output is invisible across sessions, so the footer is their anti-amnesia hint. Three modes:
+
+- **default (conditional)** — `[If a reply is needed, send via: claude-msg "<sender>:<window>" "your reply" … If no reply is needed, just act.]` — soft hint; receiver decides whether content warrants a reply.
+- **`--needs-reply`** — `[reply expected — send via: …]` — explicit pressure when sender wants confirmation.
+- **`--no-footer`** — no footer at all. Use for system broadcasts where no reply is ever expected (e.g. infra notices).
+
+Order matters: flags come AFTER target. Example: `claude-msg "<target>" --needs-reply --read-file <path>`. Footer is also skipped when not inside tmux, when sender == target, or when `CLAUDE_MSG_NO_FOOTER=1` env is set.
 
 ## Briefing workers — embed this verbatim in every brief
 

@@ -103,11 +103,18 @@ esac
 
 target="$1"; shift
 
-no_footer=0
-if [[ "${1:-}" == "--no-footer" ]]; then
-  no_footer=1
-  shift
-fi
+# Footer mode:
+#   default      = conditional ("if you need to reply, send via …") — soft hint
+#   --needs-reply = explicit ("reply expected — send via …") — pressure receiver
+#   --no-footer  = no footer at all — system broadcasts, no reply ever wanted
+footer_mode="conditional"
+while [[ $# -gt 0 ]]; do
+  case "${1:-}" in
+    --no-footer)   footer_mode="none"; shift ;;
+    --needs-reply) footer_mode="required"; shift ;;
+    *) break ;;
+  esac
+done
 
 if [[ "${1:-}" == "--read-file" ]]; then
   [[ $# -ge 2 ]] || { echo "claude-msg: --read-file requires path" >&2; exit 2; }
@@ -117,19 +124,25 @@ else
   message="$*"
 fi
 
-# Auto-append "reply via" footer so receivers know how to talk back through
-# the queue. Plain text in a Claude pane is invisible to other sessions; only
+# Auto-append footer so receivers know how to talk back through the queue.
+# Plain text in a Claude pane is invisible to other sessions; only
 # claude-msg-delivered text reaches the other claude. Skipped when:
-#   - --no-footer flag
+#   - footer_mode == none
 #   - CLAUDE_MSG_NO_FOOTER env set
 #   - not inside tmux (no $TMUX)
 #   - sender == target (self-message)
-if [[ $no_footer -eq 0 && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-}" ]]; then
+if [[ "$footer_mode" != "none" && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-}" ]]; then
   sender="$(tmux display-message -p '#S:#W' 2>/dev/null || true)"
   if [[ -n "$sender" && "$sender" != "$target" ]]; then
-    message="${message}
+    if [[ "$footer_mode" == "required" ]]; then
+      message="${message}
 
-[reply via: \`claude-msg \"${sender}\" \"your reply text\"\` invoked through the Bash tool — plain pane output is invisible to me]"
+[reply expected — send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me.]"
+    else
+      message="${message}
+
+[If a reply is needed, send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is needed, just act.]"
+    fi
   fi
 fi
 
