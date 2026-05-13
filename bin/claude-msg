@@ -137,11 +137,11 @@ if [[ "$footer_mode" != "none" && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-
     if [[ "$footer_mode" == "required" ]]; then
       message="${message}
 
-[reply expected — send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me.]"
+[To reply to THIS SPECIFIC MESSAGE (not to change your assigned supervisor), send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. A reply IS expected here. Plain pane output is invisible to me.]"
     else
       message="${message}
 
-[If reply is expected, send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is expected, just act.]"
+[If you want to reply to THIS SPECIFIC MESSAGE (not to change your assigned supervisor — that stays as named in your brief), send via: \`claude-msg \"${sender}\" \"your reply\"\` invoked through the Bash tool. Plain pane output is invisible to me. If no reply is expected, just act.]"
     fi
   fi
 fi
