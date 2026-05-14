@@ -132,30 +132,18 @@ fi
 #   - not inside tmux (no $TMUX)
 #   - sender == target (self-message)
 if [[ "$footer_mode" != "none" && -n "${TMUX:-}" && -z "${CLAUDE_MSG_NO_FOOTER:-}" ]]; then
-  sender="$(tmux display-message -p '#S:#W' 2>/dev/null || true)"
+  sender="$(tmux display-message -p -t "${TMUX_PANE:-}" '#S:#W' 2>/dev/null || true)"
   if [[ -n "$sender" && "$sender" != "$target" ]]; then
     if [[ "$footer_mode" == "required" ]]; then
       message="${message}
 
 ---
-REPLY ROUTING (scope: this message only — does NOT change your supervisor)
-- A reply IS expected for this message.
-- Send the reply ONLY to: ${sender}
-  Invocation: \`claude-msg \"${sender}\" \"your reply\"\` via Bash tool.
-- This routing applies ONLY to replying to this specific message. Your assigned supervisor (named in /tmp/<your-role>-brief.md) does NOT change.
-- For unrelated reports, dep questions, DONE notices, etc., send to the supervisor named in your brief — NOT to this sender unless they are also your supervisor.
-- Plain pane output is invisible across sessions."
+From ${sender}. Reply expected for this message — \`claude-msg \"${sender}\" \"...\"\`."
     else
       message="${message}
 
 ---
-REPLY ROUTING (scope: this message only — does NOT change your supervisor)
-- A reply is OPTIONAL — only if this message needs one.
-- If replying, send ONLY to: ${sender}
-  Invocation: \`claude-msg \"${sender}\" \"your reply\"\` via Bash tool.
-- This routing applies ONLY to replying to this specific message. Your assigned supervisor (named in /tmp/<your-role>-brief.md) does NOT change.
-- For unrelated reports, dep questions, DONE notices, etc., send to the supervisor named in your brief — NOT to this sender unless they are also your supervisor.
-- Plain pane output is invisible across sessions."
+From ${sender}. If replying to this specific message, use \`claude-msg \"${sender}\" \"...\"\`."
     fi
   fi
 fi
