@@ -81,6 +81,10 @@ is_placeholder_input() {
 #   empty  -> the line containing "> " inside the box is empty after the marker
 is_ready() {
   local target="$1"
+
+  # Hold delivery while pane is in copy-mode / scrolled up.
+  [ "$(tmux display-message -t "$target" -p '#{pane_in_mode}' 2>/dev/null)" = "1" ] && return 1
+
   local pane
   pane="$(capture "$target")"
   [[ -n "$pane" ]] || return 1
