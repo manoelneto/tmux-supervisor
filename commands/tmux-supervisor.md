@@ -41,7 +41,9 @@ Apply a collision check on the session name (`supervisor` taken → `supervisor-
 ```bash
 if [ -n "$TMUX" ]; then
   SESSION=$(tmux display-message -p '#S')
-  EXISTING=$(tmux list-windows -t "$SESSION" -F '#W')
+  # Exclude the active window — it is the one we are about to rename, so it
+  # must not count as a collision against itself.
+  EXISTING=$(tmux list-windows -t "$SESSION" -F '#{window_active} #W' | grep -v '^1 ' | cut -d' ' -f2-)
   NAME=coord
   if echo "$EXISTING" | grep -qx "$NAME"; then
     i=2
